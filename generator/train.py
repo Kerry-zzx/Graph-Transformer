@@ -14,6 +14,7 @@ import random
 def parse_config():
     parser = argparse.ArgumentParser()
     # vocabs
+    # 文件路径
     parser.add_argument('--token_vocab', type=str)
     parser.add_argument('--concept_vocab', type=str)
     parser.add_argument('--predictable_token_vocab', type=str)
@@ -23,52 +24,79 @@ def parse_config():
     parser.add_argument('--pretrained_file', type=str, default=None)
 
     # concept/token encoders
+    # 32
     parser.add_argument('--token_char_dim', type=int)
+    # 300
     parser.add_argument('--token_dim', type=int)
+    # 32
     parser.add_argument('--concept_char_dim', type=int)
+    # 300
     parser.add_argument('--concept_dim', type=int)
 
     # char-cnn
+    # 3 256
     parser.add_argument('--cnn_filters', type=int, nargs = '+')
+    # 128
     parser.add_argument('--char2word_dim', type=int)
+    # 128
     parser.add_argument('--char2concept_dim', type=int)
 
     # relation encoder
+    # 100
     parser.add_argument('--rel_dim', type=int)
+    # 256
     parser.add_argument('--rnn_hidden_size', type=int)
+    # 2
     parser.add_argument('--rnn_num_layers', type=int)
 
     # core architecture
+    # 512
     parser.add_argument('--embed_dim', type=int)
+    # 1024
     parser.add_argument('--ff_embed_dim', type=int)
+    # 8
     parser.add_argument('--num_heads', type=int)
+    # 1
     parser.add_argument('--snt_layers', type=int)
+    # 4
     parser.add_argument('--graph_layers', type=int)
+    # 3
     parser.add_argument('--inference_layers', type=int)
 
     # dropout/unk 
+    # 0.2
     parser.add_argument('--dropout', type=float)
+    # 0.33
     parser.add_argument('--unk_rate', type=float)
 
     # IO
+    # 1000
     parser.add_argument('--epochs', type=int)
+    # ${dataset}/train.txt.features.preproc.json
     parser.add_argument('--train_data', type=str)
+    # ${dataset}/dev.txt.features.preproc.json
     parser.add_argument('--dev_data', type=str)
+    # 6666
     parser.add_argument('--train_batch_size', type=int)
+    # 44444
     parser.add_argument('--dev_batch_size', type=int)
+    # 1e-3
     parser.add_argument('--lr', type=float)
+    # 2000
     parser.add_argument('--warmup_steps', type=int)
+    # ckpt\
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--print_every', type=int)
     parser.add_argument('--eval_every', type=int)
 
     # distributed training
+    # 分布式训练
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--gpus', type=int)
     parser.add_argument('--MASTER_ADDR', type=str)
     parser.add_argument('--MASTER_PORT', type=str)
     parser.add_argument('--start_rank', type=int)
-
+    
     return parser.parse_args()
 
 def average_gradients(model):
@@ -83,23 +111,36 @@ def update_lr(optimizer, embed_size, steps, warmup_steps):
         param_group['lr'] = embed_size**-0.5 * min(steps**-0.5, steps*(warmup_steps**-1.5))
 
 def main(args, local_rank):
+    # local_rank 0
+    # 构建词汇字典
     vocabs = dict()
+    # 构建词典集, 包含很多属性(size, padding)
     vocabs['concept'] = Vocab(args.concept_vocab, 5, [CLS])
     vocabs['token'] = Vocab(args.token_vocab, 5, [STR, END])
     vocabs['predictable_token'] = Vocab(args.predictable_token_vocab, 5, [END])
     vocabs['token_char'] = Vocab(args.token_char_vocab, 100, [STR, END])
     vocabs['concept_char'] = Vocab(args.concept_char_vocab, 100, [STR, END])
     vocabs['relation'] = Vocab(args.relation_vocab, 5, [CLS, rCLS, SEL, TL])
+    # 新词映射 
     lexical_mapping = LexicalMap()
 
+    # 词典名字, 词典大小和正样本比例
     for name in vocabs:
         print ((name, vocabs[name].size, vocabs[name].coverage))
 
+    # 随机数
     torch.manual_seed(19940117)
     torch.cuda.manual_seed_all(19940117)
     random.seed(19940117)
 
     device = torch.device('cuda', local_rank)
+    # 词典vocabs, token_char_dim-32, token_dim-300,
+    # concept_char_dim-32, concept_dim-300, cnn_filters-[(3, 256)] 
+    # char2word_dim-128, char2concept_dim-128, char2concept_dim-128,
+    # rel_dim-100, rnn_hidden_size-256, rnn_num_layers-2, embed_dim-512,
+    # ff_embed_dim-1024, num_heads-8, dropout-0.2, snt_layers-1,
+    # graph_layers-4, inference_layers-3, pretrained_file-预训练路径,
+    # device- cuda
     model = Generator(vocabs,
             args.token_char_dim, args.token_dim,
             args.concept_char_dim, args.concept_dim,
@@ -110,35 +151,60 @@ def main(args, local_rank):
             args.pretrained_file,
             device)
     
+    # 分布式训练
     if args.world_size > 1:
         torch.manual_seed(19940117 + dist.get_rank())
         torch.cuda.manual_seed_all(19940117 + dist.get_rank())
         random.seed(19940117+dist.get_rank())
 
     model = model.cuda(device)
+    # concept-[max_len, 1]  ([id('<CLS>'), id(data), id('<PAD>')..]) for vocabs['concept']
+    # concept_char-[max_len, 1] ['<CLS>'+'<STR>'+'data[i]['concept']+ '<END>+ '<PAD>'*n] for vocabs['concept_char']
+    # concept_depth-[0,'data[i]['depth']+0,...]
+    # relation-[n_max, n_max, 数据长度]
+    # relation_bank-[len(all_relations)), n_max]顺序id
+    # relation_length-长度 [len(all_relations))]
+    # local_idx2token-x['idx2token']
+    # local_token2idx-x['idx2token']
+    # token_in-[batch_size, n_max]
+    # token_char_in-[batch_size, n_max]
+    # token_out-使用vocabs['predictable_token']和local_token2idx对token进行编号
+    # cp_seq-['cp_seq']
+    # abstract-abstract-[batch_size, n_max]
     train_data = DataLoader(vocabs, lexical_mapping, args.train_data, args.train_batch_size, for_train=True)
     dev_data = DataLoader(vocabs, lexical_mapping, args.dev_data, args.dev_batch_size, for_train=False)
+    # unk_rate-0.33-Mask几率
     train_data.set_unk_rate(args.unk_rate)
 
     weight_decay_params = []
     no_weight_decay_params = []
     for name, param in model.named_parameters():
         if name.endswith('bias') or 'layer_norm' in name:
+            # 学习率不下降参数
             no_weight_decay_params.append(param)
         else:
             weight_decay_params.append(param)
     grouped_params = [{'params':weight_decay_params, 'weight_decay':1e-4},
                         {'params':no_weight_decay_params, 'weight_decay':0.}]
+    # 设置优化器
+    # grouped_params = [{'params':weight_decay_params, 'weight_decay':1e-4},
+    #                    {'params':no_weight_decay_params, 'weight_decay':0.}]
+    # lr-1e-3
+    # betas-(0.9, 0.999)
+    # eps-1e-6
     optimizer = AdamWeightDecayOptimizer(grouped_params, lr=args.lr, betas=(0.9, 0.999), eps=1e-6)
 
     batches_acm, loss_acm = 0, 0
     discarded_batches_acm = 0
+    
     for epoch in range(args.epochs):
         model.train()
         for batch in train_data:
             batch = move_to_cuda(batch, device) 
+            # 计算loss
             loss = model(batch)
             loss_value = loss.item()
+            # 
             if batches_acm > args.warmup_steps and loss_value > 5.*(loss_acm /batches_acm):
                 discarded_batches_acm += 1
                 print ('abnormal', loss_value)
@@ -148,10 +214,14 @@ def main(args, local_rank):
             loss.backward()
             if args.world_size > 1:
                 average_gradients(model)
+            # 剪枝
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # 更新学习率-update_lr
             update_lr(optimizer, args.embed_dim, batches_acm, args.warmup_steps)
+            # 更新参数
             optimizer.step()
             optimizer.zero_grad()
+            # 单gpu
             if args.world_size == 1 or (dist.get_rank() == 0):
                 if batches_acm % args.print_every == -1 % args.print_every:
                     print ('Train Epoch %d, Batch %d, Discarded Batch %d, loss %.3f'%(epoch, batches_acm, discarded_batches_acm, loss_acm/batches_acm))
@@ -171,12 +241,16 @@ def init_processes(args, local_rank, backend='nccl'):
     main(args, local_rank)
 
 if __name__ == "__main__":
+    # 配置参数
     args = parse_config()
     if not os.path.exists(args.ckpt):
         os.mkdir(args.ckpt)
+    # 3 256
     assert len(args.cnn_filters)%2 == 0
+    # [(3, 256)] 
     args.cnn_filters = list(zip(args.cnn_filters[:-1:2], args.cnn_filters[1::2]))
 
+    # 单gpu
     if args.world_size == 1:
         main(args, 0)
         exit(0)

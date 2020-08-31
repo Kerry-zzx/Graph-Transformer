@@ -41,6 +41,7 @@ class AMRIO:
 class LexicalMap(object):
 
     # build our lexical mapping (from concept to token/lemma), useful for copy mechanism.
+    # 构建词汇映射, 用于copy机制
     def __init__(self):
         pass
 
@@ -53,9 +54,11 @@ class LexicalMap(object):
         if vocab is None:
             return cp_seq
 
+        # 如果cp是词库意外的词, 将cp添加到new_tokens中
         new_tokens = set(cp for cp in cp_seq if vocab.token2idx(cp) == vocab.unk_idx)
         token2idx, idx2token = dict(), dict()
         nxt = vocab.size
+        # 将新token添加到vocab中
         for x in new_tokens:
             token2idx[x] = nxt
             idx2token[nxt] = x
